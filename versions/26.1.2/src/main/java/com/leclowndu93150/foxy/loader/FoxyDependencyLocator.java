@@ -69,7 +69,13 @@ public class FoxyDependencyLocator implements IDependencyLocator {
         LOGGER.info("Extracted {} bundled jar(s) contributing {} package(s); {} already provided by {} other loaded mod(s)",
                 candidates.size(), wanted.size(), providers.size(), otherMods.size());
 
-        exposeNatives(candidates);
+        try {
+            exposeNatives(candidates);
+        } catch (RuntimeException e) {
+            // Never abort mod discovery over natives handling: FML only contains
+            // ModLoadingException from locators — anything else kills every mod.
+            LOGGER.error("Failed to expose bundled natives", e);
+        }
 
         for (Candidate candidate : candidates) {
             String clash = firstProvided(candidate, providers);
@@ -99,16 +105,21 @@ public class FoxyDependencyLocator implements IDependencyLocator {
      *
      * <p>On Fabric every jar shares one class loader, so LWJGL's classpath extraction
      * finds a bundled {@code lwjgl_zstd.dll} on its own. Under FML each nested jar is its
-     * own module, and {@code Library.loadSystem}'s resource lookup cannot see another
-     * module's files — the bindings class then dies with {@code UnsatisfiedLinkError},
-     * which on a voxy worker thread is a SILENT death (the no-LODs / hung-disconnect
-     * bug; upstream issue #4). The shared libraries are copied to a stable directory and
-     * that directory is appended to {@code org.lwjgl.librarypath}, which LWJGL checks
-     * FIRST — set here, in the locator phase, long before any mod code touches LWJGL.
+     * own module, and {@code Library.loadSystem}'s in-module resource lookup cannot see
+     * another module's files — the bindings class then dies with
+     * {@code UnsatisfiedLinkError}, which on a voxy worker thread is a SILENT death (the
+     * no-LODs / hung-disconnect bug; issue #4). The libraries are copied — keeping their
+     * jar-relative {@code <os>/<arch>/...} layout, so same-named libraries for different
+     * architectures cannot collide and LWJGL's own path probing picks the right one —
+     * into a stable directory, which {@code FoxyNeoForge} then registers through the
+     * runtime {@code Configuration.LIBRARY_PATH} API (LWJGL consults that as its next
+     * rung after the in-module lookup that fails here; the system property alone is not
+     * enough because LWJGL snapshots it before this locator runs).
      */
     private static void exposeNatives(List<Candidate> candidates) {
         String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
-        String ext = os.contains("win") ? ".dll" : os.contains("mac") ? ".dylib" : ".so";
+        String ext = os.startsWith("windows") ? ".dll"
+                : (os.contains("mac") || os.contains("darwin")) ? ".dylib" : ".so";
         Path dir = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve(".foxy").resolve("natives");
         List<String> extracted = new ArrayList<>();
         for (Candidate candidate : candidates) {
@@ -118,35 +129,43 @@ public class FoxyDependencyLocator implements IDependencyLocator {
             try (JarContents jar = JarContents.ofPath(candidate.path())) {
                 List<String> libs = new ArrayList<>();
                 jar.visitContent((name, resource) -> {
-                    if (name.endsWith(ext)) libs.add(name);
+                    if (name.endsWith(ext) && !name.contains("..")) libs.add(name);
                 });
                 for (String lib : libs) {
-                    String base = lib.substring(lib.lastIndexOf('/') + 1);
-                    Files.createDirectories(dir);
-                    try (InputStream is = jar.openFile(lib)) {
-                        Files.copy(is, dir.resolve(base), StandardCopyOption.REPLACE_EXISTING);
-                    } catch (IOException locked) {
-                        // A previous instance may still hold the dll mapped (Windows lock);
-                        // the existing copy is the same version — keep it.
-                        if (!Files.exists(dir.resolve(base))) throw locked;
+                    Path target = dir.resolve(lib).normalize();
+                    if (!target.startsWith(dir)) {
+                        continue;
                     }
-                    extracted.add(base);
+                    Files.createDirectories(target.getParent());
+                    try (InputStream is = jar.openFile(lib)) {
+                        if (is == null) continue;
+                        Files.copy(is, target, StandardCopyOption.REPLACE_EXISTING);
+                        extracted.add(lib);
+                    } catch (IOException locked) {
+                        // Windows refuses to replace a library a still-running instance
+                        // has mapped; the existing copy is intact but may be STALE after
+                        // a mod update — say so instead of silently trusting it.
+                        if (Files.exists(target)) {
+                            LOGGER.warn("Kept existing {} (in use by another instance?)", target.getFileName());
+                        } else {
+                            throw locked;
+                        }
+                    }
                 }
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
                 LOGGER.error("Failed to expose natives from bundled {}", candidate.name(), e);
             }
         }
         if (!extracted.isEmpty()) {
-            String prop = System.getProperty("org.lwjgl.librarypath", "");
             String path = dir.toAbsolutePath().toString();
+            // Belt and braces for the case where LWJGL has not initialised yet; when it
+            // has (the usual case — the loading window boots it first), FoxyNeoForge's
+            // runtime Configuration set is what actually lands.
+            String prop = System.getProperty("org.lwjgl.librarypath", "");
             if (!prop.contains(path)) {
                 System.setProperty("org.lwjgl.librarypath",
                         prop.isEmpty() ? path : prop + java.io.File.pathSeparator + path);
             }
-            // LWJGL's Configuration snapshots org.lwjgl.librarypath at class init, which the
-            // loading-window bootstrap triggers BEFORE this locator runs — so the property
-            // alone is not enough. FoxyNeoForge picks this up and calls the runtime
-            // Configuration.LIBRARY_PATH.set(...), which loadSystem consults at load time.
             System.setProperty("foxy.natives.dir", path);
             LOGGER.info("Exposed {} bundled native librar{} for LWJGL at {}: {}",
                     extracted.size(), extracted.size() == 1 ? "y" : "ies", path, extracted);
@@ -199,6 +218,10 @@ public class FoxyDependencyLocator implements IDependencyLocator {
             JsonElement file = entry.getAsJsonObject().get("file");
             if (file == null || !file.isJsonPrimitive()) continue;
             String innerPath = file.getAsString();
+            String jarName = innerPath.substring(innerPath.lastIndexOf('/') + 1);
+            if (skipForeignNatives(jarName)) {
+                continue;
+            }
             try {
                 Path extracted = extract(contents, innerPath);
                 if (extracted != null) {
@@ -208,6 +231,23 @@ public class FoxyDependencyLocator implements IDependencyLocator {
             } catch (IOException ignored) {}
         }
         return candidates;
+    }
+
+    /**
+     * Nested natives jars for OTHER operating systems: useless to load, and adding every
+     * OS variant makes FML pick one arbitrarily by "most recent version data" — observed
+     * selecting the LINUX natives module on Windows. Same-OS arch variants are all kept;
+     * the path-preserving extraction in {@link #exposeNatives} keeps them collision-free.
+     */
+    private static boolean skipForeignNatives(String name) {
+        int idx = name.indexOf("-natives-");
+        if (idx < 0) {
+            return false;
+        }
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        String want = os.startsWith("windows") ? "windows"
+                : (os.contains("mac") || os.contains("darwin")) ? "macos" : "linux";
+        return !name.regionMatches(idx + "-natives-".length(), want, 0, want.length());
     }
 
     private static Set<String> packagesOf(Path jar) {
@@ -252,8 +292,7 @@ public class FoxyDependencyLocator implements IDependencyLocator {
             return null;
         }
         String name = innerPath.substring(innerPath.lastIndexOf('/') + 1);
-        Path out = Files.createTempFile("foxy-jij-", "-" + name);
-        out.toFile().deleteOnExit();
+        Path out = FoxyWork.file("foxy-jij-", name);
         try (InputStream is = contents.openFile(innerPath)) {
             Files.copy(is, out, StandardCopyOption.REPLACE_EXISTING);
         }

@@ -1,14 +1,3 @@
-> **This fork (VoX/Foxy 1.1.0):** fixes the Windows no-rendering / hung-disconnect bug
-> ([upstream issue #4](https://github.com/Leclowndu93150/Foxy/issues/4)) — Voxy's bundled
-> LWJGL zstd/lmdb *natives* were invisible to LWJGL under FML's module system, so every
-> Voxy worker thread (and, through the Sodium thread graft, every Sodium mesh builder)
-> silently died on its first compressed save. The fix extracts the bundled natives and
-> registers them with LWJGL at runtime; a thread-death logger is now built in so this
-> class of silent failure can't hide again. Builds for **MC 26.2** (voxy 0.2.18-beta +
-> sodium 0.9.1, from IntelPentiumG2's retarget) and **MC 26.1.2** (voxy 0.2.16-beta +
-> sodium 0.8.12, restored). Credits: Foxy by leclowndu93150 (MIT); 26.2 retarget by
-> IntelPentiumG2; Windows fix by VoX.
-
 <div align="center">
 
 <img src="versions/26.2/src/main/resources/assets/foxy/icon.png" width="256" alt="Foxy">
@@ -47,24 +36,52 @@ it uses over to NeoForge equivalents.
   are `required` — so an integration with a mod that has no NeoForge build would otherwise
   take the whole mod down.
 - Reimplements the `/voxy` command against NeoForge's command system.
-- Adds a Chunky auto-ingest mixin targeting NeoForge's `NeoForgeWorld`. Chunky has no
-  NeoForge build for 26.2 yet, so this mixin stays dormant until one ships.
+- Adds a Chunky auto-ingest mixin targeting NeoForge's `NeoForgeWorld`. It is active on
+  26.1.2 (Chunky 1.5.3 ships a NeoForge build there) and stays dormant on 26.2 until a
+  Chunky build for it ships.
 
 Nothing about Voxy is hardcoded. Metadata, mixins, access wideners, and bundled jars are
 all read from whatever Voxy jar is present, so Voxy updates do not require Foxy changes.
 
 ## Requirements
 
-- Minecraft 26.2
-- NeoForge
-- Sodium 0.9.1
-- Voxy 0.2.18-beta (placed in the mods folder)
+| Minecraft | NeoForge | Sodium | Voxy |
+|---|---|---|---|
+| 26.2 | 26.2.0.28-beta+ | 0.9.1 | 0.2.18-beta |
+| 26.1.2 | 26.1.2.48-beta+ | 0.8.12 | 0.2.16-beta |
+
+Use the Foxy jar matching your Minecraft version, and place the matching Voxy jar in
+the mods folder.
 
 ## Building
 
 ```
-./gradlew :26.2:build
+./gradlew build            # both versions
+./gradlew :26.2:build      # one version
+./gradlew :26.1.2:build
 ```
+
+## Changelog
+
+### 1.1.0
+
+- Fixes the Windows no-rendering / hung-disconnect bug (#4, likely also #1 and #2):
+  Voxy's bundled LWJGL zstd/lmdb native libraries were invisible to LWJGL under FML's
+  module system, so every Voxy worker thread died silently on its first compressed
+  save. Foxy now extracts the bundled natives and registers them with LWJGL at runtime.
+- Thread deaths by uncaught exception are now logged, so this class of silent failure
+  cannot hide again.
+- Restores the 26.1.2 build alongside 26.2; one gradle invocation builds both.
+- Extracted and patched jars now live under `.foxy/` in the game directory and are
+  cleaned up at the next launch (they used to accumulate in the temp directory,
+  roughly 40 MB per launch on Windows).
+- Only the natives jar matching the current operating system is loaded.
+
+## Credits
+
+- Foxy by leclowndu93150
+- 26.2 retarget contributed by IntelPentiumG2
+- Windows natives fix by VoX
 
 ## License
 

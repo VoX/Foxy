@@ -29,13 +29,21 @@ public final class FoxyEntrypoints {
             if (!(property instanceof String classNames) || classNames.isBlank()) {
                 continue;
             }
-            for (String className : classNames.split(",")) {
-                invoke(mod.getModId(), className.trim());
+            for (String entry : classNames.split(",")) {
+                invoke(mod.getModId(), entry.trim());
             }
         }
     }
 
-    private static void invoke(String modId, String className) {
+    private static void invoke(String modId, String entry) {
+        int sep = entry.indexOf(':');
+        String kind = sep < 0 ? "main" : entry.substring(0, sep);
+        String className = sep < 0 ? entry : entry.substring(sep + 1);
+        if ("client".equals(kind) && FMLEnvironment.getDist() != Dist.CLIENT) {
+            // Never load a client entrypoint class on a dedicated server — its static
+            // initialiser reaches client-only classes that do not exist there.
+            return;
+        }
         try {
             Object instance = Class.forName(className).getDeclaredConstructor().newInstance();
             if (instance instanceof ModInitializer main) {

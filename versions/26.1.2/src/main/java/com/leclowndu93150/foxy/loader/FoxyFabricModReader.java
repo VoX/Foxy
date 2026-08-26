@@ -78,7 +78,12 @@ public class FoxyFabricModReader implements IModFileReader {
     private static List<String> readEntrypoints(JsonObject fmj) {
         List<String> result = new ArrayList<>();
         for (String kind : List.of("main", "client")) {
-            result.addAll(readEntrypoints(fmj, kind));
+            for (String className : readEntrypoints(fmj, kind)) {
+                // The kind rides along so FoxyEntrypoints can skip client classes on a
+                // dedicated server BEFORE loading them (their static init touches client
+                // classes that do not exist there).
+                result.add(kind + ":" + className);
+            }
         }
         return result;
     }
@@ -126,8 +131,7 @@ public class FoxyFabricModReader implements IModFileReader {
 
     private static Path patchJar(Path original, JsonObject fmj) throws IOException {
         String modId = string(fmj, "id", "voxy");
-        Path patched = Files.createTempFile("foxy-patched-" + modId + "-", ".jar");
-        patched.toFile().deleteOnExit();
+        Path patched = FoxyWork.file("foxy-patched-" + modId + "-", "mod.jar");
 
         Set<String> mixinConfigs = new HashSet<>(readMixins(fmj));
         try (ZipFile in = new ZipFile(original.toFile());
@@ -254,7 +258,7 @@ public class FoxyFabricModReader implements IModFileReader {
         for (String dependency : readDependencies(fmj)) {
             sb.append("[[dependencies.").append(modId).append("]]\n");
             sb.append("modId = \"").append(esc(dependency)).append("\"\n");
-            sb.append("type = \"required\"\nversionRange = \"*\"\nordering = \"BEFORE\"\nside = \"BOTH\"\n");
+            sb.append("type = \"required\"\nversionRange = \"*\"\nordering = \"AFTER\"\nside = \"BOTH\"\n");
         }
         for (String mixin : readMixins(fmj)) {
             sb.append("[[mixins]]\nconfig = \"").append(esc(mixin)).append("\"\n");
@@ -326,7 +330,7 @@ public class FoxyFabricModReader implements IModFileReader {
         try (InputStream is = jar.openFile("fabric.mod.json")) {
             if (is == null) return null;
             return JsonParser.parseReader(new InputStreamReader(is, StandardCharsets.UTF_8)).getAsJsonObject();
-        } catch (IOException | IllegalStateException e) {
+        } catch (IOException | RuntimeException e) {
             return null;
         }
     }
@@ -352,7 +356,24 @@ public class FoxyFabricModReader implements IModFileReader {
     }
 
     private static String esc(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+        StringBuilder sb = new StringBuilder(s.length());
+        for (char c : s.toCharArray()) {
+            switch (c) {
+                case '\\' -> sb.append("\\\\");
+                case '"' -> sb.append("\\\"");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04X", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.toString();
     }
 
     @Override

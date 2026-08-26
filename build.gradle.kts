@@ -10,7 +10,8 @@ version = "1.1.0"
 // net.fabricmc.loader.api.FabricLoader in the game, which every multiloader mod that probes for
 // that class read as "we are on Fabric" before failing on a stub Foxy does not implement.
 subprojects {
-    tasks.withType<Jar>().configureEach {
+    // Only the binary jar: the sources jar should still carry the stub sources.
+    tasks.withType<Jar>().matching { it.name == "jar" }.configureEach {
         exclude("net/fabricmc/**")
     }
 }
