@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "com.leclowndu93150"
-version = "1.0.0"
+version = "1.1.0"
 
 // The net.fabricmc types under src/main/java exist only so javac can resolve the Fabric
 // supertypes of the Voxy classes Foxy compiles against. Shipping them put a real

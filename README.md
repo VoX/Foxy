@@ -1,3 +1,14 @@
+> **This fork (VoX/Foxy 1.1.0):** fixes the Windows no-rendering / hung-disconnect bug
+> ([upstream issue #4](https://github.com/Leclowndu93150/Foxy/issues/4)) — Voxy's bundled
+> LWJGL zstd/lmdb *natives* were invisible to LWJGL under FML's module system, so every
+> Voxy worker thread (and, through the Sodium thread graft, every Sodium mesh builder)
+> silently died on its first compressed save. The fix extracts the bundled natives and
+> registers them with LWJGL at runtime; a thread-death logger is now built in so this
+> class of silent failure can't hide again. Builds for **MC 26.2** (voxy 0.2.18-beta +
+> sodium 0.9.1, from IntelPentiumG2's retarget) and **MC 26.1.2** (voxy 0.2.16-beta +
+> sodium 0.8.12, restored). Credits: Foxy by leclowndu93150 (MIT); 26.2 retarget by
+> IntelPentiumG2; Windows fix by VoX.
+
 <div align="center">
 
 <img src="versions/26.2/src/main/resources/assets/foxy/icon.png" width="256" alt="Foxy">
