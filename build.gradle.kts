@@ -27,6 +27,25 @@ prism {
     modrinthMaven()
     maven("NeoForged", "https://maven.neoforged.net/releases")
 
+    version("26.1.2") {
+        neoforge {
+            loaderVersion = "26.1.2.48-beta"
+            loaderVersionRange = "[4,)"
+
+            dependencies {
+                compileOnly("maven.modrinth:sodium:mc26.1.2-0.8.12-neoforge")
+                runtimeOnly("maven.modrinth:sodium:mc26.1.2-0.8.12-neoforge")
+                compileOnly("maven.modrinth:voxy:0.2.16-beta")
+                implementation("maven.modrinth:voxy:0.2.16-beta")
+                compileOnly("cpw.mods:modlauncher:11.0.5")
+                compileOnly("cpw.mods:securejarhandler:3.0.8")
+                compileOnly("net.neoforged.fancymodloader:loader:11.0.13")
+
+                compileOnly("maven.modrinth:chunky:hEXc6nbN")
+            }
+        }
+    }
+
     version("26.2") {
         neoforge {
             loaderVersion = "26.2.0.28-beta"
