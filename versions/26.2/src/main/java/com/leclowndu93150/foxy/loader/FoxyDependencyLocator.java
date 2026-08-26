@@ -69,6 +69,8 @@ public class FoxyDependencyLocator implements IDependencyLocator {
         LOGGER.info("Extracted {} bundled jar(s) contributing {} package(s); {} already provided by {} other loaded mod(s)",
                 candidates.size(), wanted.size(), providers.size(), otherMods.size());
 
+        exposeNatives(candidates);
+
         for (Candidate candidate : candidates) {
             String clash = firstProvided(candidate, providers);
             if (clash != null) {
@@ -89,6 +91,65 @@ public class FoxyDependencyLocator implements IDependencyLocator {
             } catch (IOException e) {
                 LOGGER.error("Failed to add bundled {}", candidate.name(), e);
             }
+        }
+    }
+
+    /**
+     * Makes the native libraries inside {@code *-natives-<os>} nested jars loadable.
+     *
+     * <p>On Fabric every jar shares one class loader, so LWJGL's classpath extraction
+     * finds a bundled {@code lwjgl_zstd.dll} on its own. Under FML each nested jar is its
+     * own module, and {@code Library.loadSystem}'s resource lookup cannot see another
+     * module's files — the bindings class then dies with {@code UnsatisfiedLinkError},
+     * which on a voxy worker thread is a SILENT death (the no-LODs / hung-disconnect
+     * bug; upstream issue #4). The shared libraries are copied to a stable directory and
+     * that directory is appended to {@code org.lwjgl.librarypath}, which LWJGL checks
+     * FIRST — set here, in the locator phase, long before any mod code touches LWJGL.
+     */
+    private static void exposeNatives(List<Candidate> candidates) {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        String ext = os.contains("win") ? ".dll" : os.contains("mac") ? ".dylib" : ".so";
+        Path dir = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve(".foxy").resolve("natives");
+        List<String> extracted = new ArrayList<>();
+        for (Candidate candidate : candidates) {
+            if (!candidate.name().contains("-natives-")) {
+                continue;
+            }
+            try (JarContents jar = JarContents.ofPath(candidate.path())) {
+                List<String> libs = new ArrayList<>();
+                jar.visitContent((name, resource) -> {
+                    if (name.endsWith(ext)) libs.add(name);
+                });
+                for (String lib : libs) {
+                    String base = lib.substring(lib.lastIndexOf('/') + 1);
+                    Files.createDirectories(dir);
+                    try (InputStream is = jar.openFile(lib)) {
+                        Files.copy(is, dir.resolve(base), StandardCopyOption.REPLACE_EXISTING);
+                    } catch (IOException locked) {
+                        // A previous instance may still hold the dll mapped (Windows lock);
+                        // the existing copy is the same version — keep it.
+                        if (!Files.exists(dir.resolve(base))) throw locked;
+                    }
+                    extracted.add(base);
+                }
+            } catch (IOException e) {
+                LOGGER.error("Failed to expose natives from bundled {}", candidate.name(), e);
+            }
+        }
+        if (!extracted.isEmpty()) {
+            String prop = System.getProperty("org.lwjgl.librarypath", "");
+            String path = dir.toAbsolutePath().toString();
+            if (!prop.contains(path)) {
+                System.setProperty("org.lwjgl.librarypath",
+                        prop.isEmpty() ? path : prop + java.io.File.pathSeparator + path);
+            }
+            // LWJGL's Configuration snapshots org.lwjgl.librarypath at class init, which the
+            // loading-window bootstrap triggers BEFORE this locator runs — so the property
+            // alone is not enough. FoxyNeoForge picks this up and calls the runtime
+            // Configuration.LIBRARY_PATH.set(...), which loadSystem consults at load time.
+            System.setProperty("foxy.natives.dir", path);
+            LOGGER.info("Exposed {} bundled native librar{} for LWJGL at {}: {}",
+                    extracted.size(), extracted.size() == 1 ? "y" : "ies", path, extracted);
         }
     }
 
