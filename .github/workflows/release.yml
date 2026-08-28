@@ -1,0 +1,95 @@
+name: Release
+
+# Tag-triggered release: builds every Prism version (currently 26.1.2 and 26.2)
+# and publishes ONE GitHub release carrying the per-MC-version jars. The tag
+# must match the version in build.gradle.kts (tag v1.1.0 <-> version = "1.1.0");
+# a mismatch fails BEFORE the build. The release is created as a draft and
+# published only after every asset uploads, so a partial upload can never
+# publish half a release. Re-running against an existing release fails loudly:
+# to retag, delete the release first (gh release delete <tag>).
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify tag matches build.gradle.kts version (before paying for the build)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          GRADLE_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' build.gradle.kts)
+          if [ "$VERSION" != "$GRADLE_VERSION" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match build.gradle.kts version = \"${GRADLE_VERSION}\""
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::release ${GITHUB_REF_NAME} already exists — delete it first to retag (gh release delete ${GITHUB_REF_NAME})"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # wrapper checksum validation + dependency caching
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build both Minecraft versions
+        run: ./gradlew build --stacktrace
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          EXPECTED=$(find versions -mindepth 1 -maxdepth 1 -type d | wc -l)
+          mapfile -t JARS < <(find versions -path '*/build/libs/*' -name "foxy-*-NeoForge-${VERSION}.jar" ! -name '*-sources*' | sort)
+          if [ "${#JARS[@]}" -ne "$EXPECTED" ]; then
+            echo "::error::expected ${EXPECTED} jars (one per versions/ dir) for ${VERSION}, found ${#JARS[@]}"
+            find versions -path '*/build/libs/*.jar' | sort
+            exit 1
+          fi
+          MC_LIST=$(find versions -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | paste -sd'+' | sed 's/+/ + /g')
+          {
+            echo "Community fork of [Leclowndu93150/Foxy](https://github.com/Leclowndu93150/Foxy) maintained by VoX."
+            echo "Credits: Foxy by leclowndu93150; 26.2 retarget by IntelPentiumG2; Windows natives fix and dual-version build by VoX."
+            echo
+            echo "One jar per Minecraft version — install the one matching your server/client, plus the matching Voxy and Sodium builds from the Requirements table in the README:"
+            echo
+            for j in "${JARS[@]}"; do
+              b=$(basename "$j")
+              mc=${b#foxy-}; mc=${mc%%-NeoForge*}
+              echo "- \`${b}\` — Minecraft ${mc}"
+            done
+            echo
+            sed -n '/^## Requirements/,/^## [^R]/p' README.md | sed '$d'
+            echo
+            awk -v v="### ${VERSION}" '$0 == v {f=1; print; next} f && /^#{2,3} / {exit} f' README.md
+            echo
+            echo "**Full Changelog**: https://github.com/VoX/Foxy/commits/${GITHUB_REF_NAME}"
+          } > NOTES.md
+          sha256sum "${JARS[@]}" > sha256sums.txt
+          PRERELEASE=""
+          case "$VERSION" in *-*) PRERELEASE="--prerelease";; esac
+          gh release create "$GITHUB_REF_NAME" "${JARS[@]}" sha256sums.txt \
+            --title "Foxy ${VERSION} (MC ${MC_LIST})" \
+            --notes-file NOTES.md \
+            --verify-tag --draft $PRERELEASE
+          gh release edit "$GITHUB_REF_NAME" --draft=false
